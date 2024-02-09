@@ -15,28 +15,6 @@ inputs:
     description: >-
       GitHub Personal Access Token with the 'repo' scope assigned.
     required: true
-  ec2-image-id:
-    description: >-
-      EC2 Image Id (AMI). The new runner will be launched from this image.
-      This input is required if you use the 'start' mode.
-    required: false
-  ec2-instance-type:
-    description: >-
-      EC2 Instance Type. 
-      This input is required if you use the 'start' mode.
-    required: false
-  subnet-id:
-    description: >-
-      VPC Subnet Id. The subnet should belong to the same VPC as the specified security group.
-      This input is required if you use the 'start' mode.
-    required: false
-  security-group-id:
-    description: >-
-      EC2 Security Group Id. 
-      The security group should belong to the same VPC as the specified subnet.
-      The runner doesn't require any inbound traffic. However, outbound traffic should be allowed.
-      This input is required if you use the 'start' mode.
-    required: false
   label:
     description: >-
       Name of the unique label assigned to the runner.
@@ -48,11 +26,6 @@ inputs:
       EC2 Instance Id of the created runner.
       The id is used to terminate the EC2 instance when the runner is not needed anymore.
       This input is required if you use the 'stop' mode.
-    required: false
-  iam-role-name:
-    description: >-
-      IAM Role Name to attach to the created EC2 instance.
-      This requires additional permissions on the AWS role used to launch instances.
     required: false
   aws-resource-tags:
     description: >-
@@ -69,6 +42,14 @@ inputs:
     description: >-
       Specifies bash commands to run before the runner starts. It's useful for installing dependencies with apt-get, yum, dnf, etc.
     required: false
+  ec2-launch-params:
+    description: >-
+      EC2 launch params as a YAML string. See https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/EC2.html#runInstances-property for all possible properties.
+    required: false
+  ec2-try-spot-first:
+    description: >-
+      Set to 'true' if you want to automatically try to boot a Spot instance first.
+    required: false
 
 outputs:
   label:
@@ -82,5 +63,5 @@ outputs:
       EC2 Instance Id of the created runner.
       The id is used to terminate the EC2 instance when the runner is not needed anymore.
 runs:
-  using: node16
+  using: node20
   main: ./dist/index.js

@@ -1,35 +1,26 @@
 const AWS = require('aws-sdk');
 const core = require('@actions/core');
 const config = require('./config');
+const yaml = require('js-yaml');
 
 // User data scripts are run as the root user
 function buildUserDataScript(githubRegistrationToken, label) {
-  if (config.input.runnerHomeDir) {
-    // If runner home directory is specified, we expect the actions-runner software (and dependencies)
-    // to be pre-installed in the AMI, so we simply cd into that directory and then start the runner
-    return [
-      '#!/bin/bash',
-      `cd "${config.input.runnerHomeDir}"`,
-      `echo "${config.input.preRunnerScript}" > pre-runner-script.sh`,
-      'source pre-runner-script.sh',
-      'export RUNNER_ALLOW_RUNASROOT=1',
-      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label}`,
-      './run.sh',
-    ];
-  } else {
-    return [
-      '#!/bin/bash',
-      'mkdir actions-runner && cd actions-runner',
-      `echo "${config.input.preRunnerScript}" > pre-runner-script.sh`,
-      'source pre-runner-script.sh',
-      'case $(uname -m) in aarch64) ARCH="arm64" ;; amd64|x86_64) ARCH="x64" ;; esac && export RUNNER_ARCH=${ARCH}',
-      'curl -O -L https://github.com/actions/runner/releases/download/v2.299.1/actions-runner-linux-${RUNNER_ARCH}-2.299.1.tar.gz',
-      'tar xzf ./actions-runner-linux-${RUNNER_ARCH}-2.299.1.tar.gz',
-      'export RUNNER_ALLOW_RUNASROOT=1',
-      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label}`,
-      './run.sh',
-    ];
-  }
+  return [
+    '#!/bin/bash',
+    `if [ ! -d "${config.input.runnerHomeDir}" ]; then`,
+    `  mkdir -p "${config.input.runnerHomeDir}" && cd "${config.input.runnerHomeDir}"`,
+    `  echo "${config.input.preRunnerScript}" > pre-runner-script.sh`,
+    '  source pre-runner-script.sh',
+    '  case $(uname -m) in aarch64) ARCH="arm64" ;; amd64|x86_64) ARCH="x64" ;; esac && export RUNNER_ARCH=${ARCH}',
+    '  curl -O -L https://github.com/actions/runner/releases/download/v2.299.1/actions-runner-linux-${RUNNER_ARCH}-2.299.1.tar.gz',
+    '  tar xzf ./actions-runner-linux-${RUNNER_ARCH}-2.299.1.tar.gz',
+    '  cd -',
+    'fi',
+    `cd ${config.input.runnerHomeDir}`,
+    'export RUNNER_ALLOW_RUNASROOT=1',
+    `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label}`,
+    './run.sh',
+  ];
 }
 
 async function startEc2Instance(label, githubRegistrationToken) {
@@ -37,27 +28,36 @@ async function startEc2Instance(label, githubRegistrationToken) {
 
   const userData = buildUserDataScript(githubRegistrationToken, label);
 
-  const params = {
-    ImageId: config.input.ec2ImageId,
-    InstanceType: config.input.ec2InstanceType,
-    MinCount: 1,
-    MaxCount: 1,
-    UserData: Buffer.from(userData.join('\n')).toString('base64'),
-    SubnetId: config.input.subnetId,
-    SecurityGroupIds: [config.input.securityGroupId],
-    IamInstanceProfile: { Name: config.input.iamRoleName },
-    TagSpecifications: config.tagSpecifications,
-  };
+  const params = Object.assign({},
+    { UserData: Buffer.from(userData.join('\n')).toString('base64') },
+    { MinCount: 1} ,
+    { MaxCount: 1 },
+    config.tagSpecifications && { TagSpecifications: config.tagSpecifications },
+    yaml.load(config.input.ec2LaunchParams)
+  );
 
-  try {
-    const result = await ec2.runInstances(params).promise();
-    const ec2InstanceId = result.Instances[0].InstanceId;
-    core.info(`AWS EC2 instance ${ec2InstanceId} is started`);
-    return ec2InstanceId;
-  } catch (error) {
-    core.error('AWS EC2 instance starting error');
-    throw error;
+  let paramsList = [params]
+  if (config.input.ec2TrySpotFirst === 'true') {
+    const spotParams = Object.assign({}, params, { InstanceMarketOptions: { MarketType: 'spot' }});
+    paramsList = [spotParams, params]
   }
+
+  let lastError = null;
+  for(let i = 0; i < paramsList.length; i++) {
+    core.info(`Trying launch parameters ${i + 1} of ${paramsList.length}`);
+    try {
+      const result = await ec2.runInstances(paramsList[i]).promise();
+      const ec2InstanceId = result.Instances[0].InstanceId;
+      core.info(`AWS EC2 instance ${ec2InstanceId} is started`);
+      return ec2InstanceId;
+    } catch (error) {
+      lastError = error;
+      core.warning(`AWS EC2 instance start error: ${error.message}`);
+    }
+  }
+
+  core.error('AWS EC2 instance starting error');
+  throw lastError;
 }
 
 async function terminateEc2Instance() {
